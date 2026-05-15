@@ -7,12 +7,8 @@ import requests
 import json
 import time
 import base64
-import cv2
-import numpy as np
+import os
 from datetime import datetime
-import matplotlib.pyplot as plt
-import asyncio
-from io import BytesIO
 
 API_URL = "http://localhost:8000/api"
 
@@ -30,12 +26,16 @@ class CMFHClient:
     def __init__(self, base_url: str = API_URL):
         self.base_url = base_url
 
-    def transcribe_audio_file(self, audio_data: bytes, filename: str = "audio.webm"):
+    def transcribe_audio(self, audio_file):
         """Transcribe audio file"""
         try:
-            files = {"audio_file": (filename, audio_data, "audio/webm")}
+            files = {"audio_file": (audio_file.name, audio_file.getvalue(), audio_file.type)}
             response = requests.post(f"{self.base_url}/transcribe", files=files, timeout=120)
             return response.json()
+        except requests.exceptions.Timeout:
+            return {"text": "", "success": False, "error": "Timeout - audio too long"}
+        except requests.exceptions.ConnectionError:
+            return {"text": "", "success": False, "error": "Backend not connected"}
         except Exception as e:
             return {"text": "", "success": False, "error": str(e)}
 
@@ -59,26 +59,27 @@ class CMFHClient:
         """Rewrite text"""
         return requests.post(f"{self.base_url}/rewrite", json={"text": text, "style": style}, timeout=60).json()
 
-    def feedback(self, text: str):
-        """Get feedback"""
-        return requests.post(f"{self.base_url}/feedback", json={"text": text}, timeout=30).json()
-
-    def analyze_tedx(self, text: str):
-        """TEDX analysis"""
-        return requests.post(f"{self.base_url}/analyze/tedx", json={"text": text}, timeout=30).json()
-
     def analyze_pose(self, file):
         """Analyze pose from image"""
-        files = {"file": file}
-        return requests.post(f"{self.base_url}/vision/analyze/pose", files=files, timeout=30).json()
+        try:
+            files = {"file": (file.name, file.getvalue(), file.type)}
+            return requests.post(f"{self.base_url}/vision/analyze/pose", files=files, timeout=30).json()
+        except Exception as e:
+            return {"detected": False, "message": str(e)}
 
     def history(self, limit: int = 10):
         """Get history"""
-        return requests.get(f"{self.base_url}/history?limit={limit}", timeout=10).json()
+        try:
+            return requests.get(f"{self.base_url}/history?limit={limit}", timeout=10).json()
+        except:
+            return {"sessions": [], "statistics": {"total_sessions": 0}}
 
     def health(self):
         """Health check"""
-        return requests.get(f"{self.base_url}/health", timeout=10).json()
+        try:
+            return requests.get(f"{self.base_url}/health", timeout=5).json()
+        except:
+            return {"status": "error"}
 
 
 client = CMFHClient()
@@ -92,10 +93,8 @@ def init_session_state():
         st.session_state.analysis = None
     if "rewritten" not in st.session_state:
         st.session_state.rewritten = None
-    if "feedback" not in st.session_state:
-        st.session_state.feedback = None
-    if "audio_data" not in st.session_state:
-        st.session_state.audio_data = None
+    if "audio_transcribed" not in st.session_state:
+        st.session_state.audio_transcribed = False
 
 
 def render_header():
@@ -112,71 +111,92 @@ def render_sidebar():
     try:
         history = client.history(limit=5)
         stats = history.get("statistics", {})
-        with st.sidebar.expander("📈 Session Stats", expanded=True):
+        with st.sidebar.expander("📈 Session Stats", expanded=False):
             st.metric("Total Sessions", stats.get("total_sessions", 0))
             st.metric("Average Score", stats.get("average_score", 0))
-            st.metric("Recent Average", stats.get("recent_average", 0))
     except:
         pass
 
     with st.sidebar.expander("ℹ️ System Status"):
         try:
             health = client.health()
-            st.success(f"Status: {health.get('status', 'unknown')}")
-            st.info(f"Whisper: {health.get('whisper_model', 'unknown')}")
-            st.info(f"Ollama: {'✅' if health.get('ollama_available') else '❌'}")
+            if health.get("status") == "healthy":
+                st.success(f"✅ Backend Connected")
+                st.info(f"Whisper: {health.get('whisper_model', 'unknown')}")
+                st.info(f"Ollama: {'✅' if health.get('ollama_available') else '❌'}")
+            else:
+                st.error("❌ Backend not responding")
         except:
-            st.error("Backend not connected")
+            st.error("❌ Cannot connect to backend")
 
 
 def render_voice_input():
     """Render voice input section"""
-    st.subheader("🎙️ Voice Input")
+    st.subheader("🎙️ Voice/Audio Input")
 
-    tab1, tab2 = st.tabs(["📁 Upload Audio File", "🎤 Real-time Recording"])
+    tab1, tab2 = st.tabs(["📁 Upload Audio File", "ℹ️ How to Use"])
 
     with tab1:
-        st.markdown("**Upload audio file (.mp3, .wav, .m4a, .webm)**")
-        audio_file = st.file_uploader("Choose audio file", type=["mp3", "wav", "m4a", "ogg", "webm", "flac"])
+        st.markdown("**Upload an audio file to transcribe**")
+        
+        audio_file = st.file_uploader(
+            "Choose audio file",
+            type=["mp3", "wav", "m4a", "ogg", "webm", "flac", "wma", "aac"]
+        )
 
         if audio_file:
-            if st.button("🔄 Transcribe Audio", type="primary"):
-                with st.spinner("Transcribing audio... This may take a while..."):
+            st.info(f"📄 File: {audio_file.name} ({audio_file.size/1024:.1f} KB)")
+            
+            if st.button("🔄 Transcribe Audio", type="primary", use_container_width=True):
+                with st.spinner("⏳ Transcribing audio... (this may take a moment)"):
                     try:
-                        audio_bytes = audio_file.getvalue()
-                        result = client.transcribe_audio_file(audio_bytes, audio_file.name)
-
+                        result = client.transcribe_audio(audio_file)
+                        
                         if result.get("success") and result.get("text"):
                             st.session_state.transcript = result["text"]
-                            st.success(f"✅ Transcribed: {result['text'][:200]}...")
-                            st.session_state.audio_processed = True
+                            st.session_state.audio_transcribed = True
+                            st.success(f"✅ Transcribed successfully!")
+                            st.info(f"**Transcript:** {result['text'][:500]}...")
+                            if len(result['text']) > 500:
+                                st.info(f"... (total {len(result['text'])} characters)")
                         else:
-                            st.error(f"Transcription failed: {result.get('error', 'Unknown error')}")
+                            error_msg = result.get("error", "Unknown error")
+                            st.error(f"❌ Transcription failed: {error_msg}")
+                            
+                            if "ffmpeg" in error_msg.lower():
+                                st.info("💡 Tip: Install ffmpeg to support more audio formats")
+                            elif "model" in error_msg.lower():
+                                st.info("💡 Tip: Check if faster-whisper is properly installed")
+                                
                     except Exception as e:
-                        st.error(f"Error: {str(e)}")
+                        st.error(f"❌ Error: {str(e)}")
 
     with tab2:
-        st.markdown("**Real-time Microphone Recording**")
-
-        st.info("🎤 Click the button below to record your voice")
-
-        if st.button("🎤 Start Real-time Recording", type="primary", use_container_width=True):
-            st.session_state.recording = True
-            st.info("🔴 Recording started! Speak now...")
-
-        if st.session_state.get("recording", False):
-            st.warning("Recording in progress... Click 'Stop & Transcribe' when done.")
-
-            if st.button("⏹️ Stop & Transcribe"):
-                st.session_state.recording = False
-                st.warning("Processing recorded audio...")
-
-                st.info("📝 For real-time recording, please use the audio file upload feature.")
-                st.info("💡 Tip: Record your voice using any voice recorder app, save as .wav/.mp3, then upload above!")
-
-        st.markdown("---")
-        st.markdown("**Supported formats:** MP3, WAV, M4A, OGG, WebM, FLAC")
-        st.markdown("**Tip:** Use your phone or computer voice recorder, save the file, and upload above!")
+        st.markdown("""
+        **🎤 How to use voice input:**
+        
+        1. **Record your voice** using your phone or computer's voice recorder
+        
+        2. **Save as audio file** - Supported formats:
+           - MP3 (most common)
+           - WAV (best quality)
+           - M4A (iPhone)
+           - OGG, WebM, FLAC
+        
+        3. **Upload** the file above
+        
+        4. **Click Transcribe** to convert speech to text
+        
+        5. **Then analyze** your speech for improvements!
+        
+        ---
+        
+        **📝 Note:** For best results:
+        - Speak clearly and at normal pace
+        - Avoid background noise
+        - Use MP3 or WAV format
+        - Keep recordings under 5 minutes
+        """)
 
 
 def render_text_input():
@@ -184,14 +204,15 @@ def render_text_input():
     st.subheader("📝 Text Input")
 
     text_input = st.text_area(
-        "Enter your speech:",
-        value=st.session_state.transcript,
+        "Enter or paste your speech:",
+        value=st.session_state.transcript if not st.session_state.get("audio_transcribed") else st.session_state.transcript,
         height=150,
-        placeholder="Type or paste your speech here to analyze and rewrite as a TEDX speaker..."
+        placeholder="Type your speech here to analyze and rewrite as a professional TEDX speaker..."
     )
 
     if text_input != st.session_state.transcript:
         st.session_state.transcript = text_input
+        st.session_state.audio_transcribed = False
 
     col1, col2, col3 = st.columns(3)
 
@@ -220,7 +241,7 @@ def render_text_input():
         st.session_state.transcript = ""
         st.session_state.analysis = None
         st.session_state.rewritten = None
-        st.session_state.feedback = None
+        st.session_state.audio_transcribed = False
         st.rerun()
 
 
@@ -228,53 +249,46 @@ def render_camera_input():
     """Render camera/pose input section"""
     st.subheader("📸 Camera / Pose Analysis")
 
-    tab1, tab2 = st.tabs(["📁 Upload Image/Video", "📹 About Camera"])
+    tab1, tab2 = st.tabs(["📁 Upload Image/Video", "ℹ️ About Pose Analysis"])
 
     with tab1:
-        st.markdown("**Upload image or video for pose analysis**")
+        st.markdown("**Upload image or video to analyze your body language**")
         pose_file = st.file_uploader("Choose file", type=["jpg", "jpeg", "png", "mp4", "avi", "mov"])
+
         if pose_file:
             if st.button("🔄 Analyze Pose", type="primary"):
                 with st.spinner("Analyzing pose..."):
                     try:
-                        files = {"file": (pose_file.name, pose_file.getvalue(), pose_file.type)}
-                        response = requests.post(f"{API_URL}/vision/analyze/pose", files=files, timeout=30)
-                        if response.status_code == 200:
-                            result = response.json()
+                        result = client.analyze_pose(pose_file)
+                        if result.get("detected"):
                             display_pose_results(result)
                         else:
-                            st.error("Pose analysis failed")
+                            st.warning(result.get("message", "No person detected"))
                     except Exception as e:
                         st.error(f"Error: {str(e)}")
 
     with tab2:
-        st.markdown("**📹 Live Camera Information**")
-        st.info("""
-        For live camera feed with real-time pose detection:
-
-        1. **Streamlit limitation**: Streamlit doesn't support continuous webcam streaming natively
-
-        2. **Workaround options**:
-           - Record yourself on your phone/computer
-           - Take photos while practicing
-           - Upload the recording/image above
-
-        3. **Features available**:
-           - ✅ Upload images (JPG, PNG)
-           - ✅ Upload videos (MP4, AVI)
-           - ✅ Pose detection & analysis
-           - ✅ Posture scoring
-           - ✅ Hand gesture detection
-           - ✅ Body language suggestions
+        st.markdown("""
+        **📸 What we analyze:**
+        
+        - **Posture** - Are you standing/sitting straight?
+        - **Hand Gestures** - Are your hand movements natural?
+        - **Arm Position** - Are your arms open or crossed?
+        - **Shoulder Balance** - Are shoulders level?
+        - **Confidence Level** - High, medium, or low?
+        
+        ---
+        
+        **💡 Tips for best results:**
+        - Use good lighting
+        - Show your upper body in the frame
+        - Take a photo while practicing speaking
+        - Upload a video clip of your presentation practice
         """)
 
 
 def display_pose_results(result: dict):
     """Display pose analysis results"""
-    if not result.get("detected", False):
-        st.warning(result.get("message", "No person detected"))
-        return
-
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
@@ -284,7 +298,7 @@ def display_pose_results(result: dict):
         st.metric("Shoulder Balance", f"{result.get('shoulder_balance', 0)}%")
 
     with col3:
-        st.metric("Hand Gesture", result.get('hand_gesture', 'N/A'))
+        st.metric("Hand Gesture", result.get('hand_gesture', 'N/A').replace('_', ' ').title())
 
     with col4:
         st.metric("Confidence", result.get('confidence_level', 'N/A').upper())
@@ -296,33 +310,33 @@ def display_pose_results(result: dict):
 
 def analyze_speech():
     """Analyze speech"""
-    with st.spinner("Analyzing your speech..."):
+    with st.spinner("Analyzing..."):
         try:
-            analysis = client.analyze(st.session_state.transcript)
-            st.session_state.analysis = analysis
+            result = client.analyze(st.session_state.transcript)
+            st.session_state.analysis = result
         except Exception as e:
-            st.error(f"Analysis failed: {str(e)}")
+            st.error(f"Error: {str(e)}")
 
 
 def rewrite_speech():
     """Rewrite speech"""
-    with st.spinner("Generating professional TEDX-style rewrite..."):
+    with st.spinner("Generating TEDX-style rewrite..."):
         try:
-            rewrite = client.rewrite(st.session_state.transcript, "tedx")
-            st.session_state.rewritten = rewrite
+            result = client.rewrite(st.session_state.transcript, "tedx")
+            st.session_state.rewritten = result
         except Exception as e:
-            st.error(f"Rewrite failed: {str(e)}")
+            st.error(f"Error: {str(e)}")
 
 
 def complete_analysis():
-    """Complete analysis with all features"""
+    """Complete analysis"""
     with st.spinner("Performing complete analysis..."):
         try:
             result = client.complete_analysis(st.session_state.transcript)
             st.session_state.analysis = result
             st.session_state.rewritten = {"rewritten": result.get("rewritten", ""), "source": "llm"}
         except Exception as e:
-            st.error(f"Analysis failed: {str(e)}")
+            st.error(f"Error: {str(e)}")
 
 
 def render_results():
@@ -337,98 +351,87 @@ def render_results():
             render_complete_results(analysis)
         else:
             render_nlp_results(analysis)
-    else:
-        st.warning("No results to display")
 
 
 def render_nlp_results(analysis: dict):
-    """Render NLP analysis results"""
+    """Render NLP results"""
     st.subheader("📊 Analysis Results")
 
     col1, col2, col3, col4, col5 = st.columns(5)
 
     with col1:
-        score = analysis.get("overall_score", 0)
-        st.metric("Overall Score", f"{score}/100")
+        st.metric("Overall", f"{analysis.get('overall_score', 0)}/100")
 
     with col2:
         grammar = analysis.get("grammar", {})
-        errors = grammar.get("error_count", 0)
-        st.metric("Grammar Errors", errors)
+        st.metric("Grammar Errors", grammar.get("error_count", 0))
 
     with col3:
         filler = analysis.get("filler", {})
-        filler_ratio = filler.get("filler_ratio", 0)
-        st.metric("Filler Ratio", f"{filler_ratio}%")
+        st.metric("Filler %", f"{filler.get('effective_filler_ratio', filler.get('filler_ratio', 0))}%")
 
     with col4:
         conf = analysis.get("confidence", {})
-        conf_score = conf.get("confidence_score", 0)
-        st.metric("Confidence", f"{conf_score}/100")
+        st.metric("Confidence", f"{conf.get('confidence_score', 0):.0f}/100")
 
     with col5:
         vocab = analysis.get("vocabulary", {})
-        vocab_score = vocab.get("vocabulary_score", 0)
-        st.metric("Vocabulary", f"{vocab_score}/100")
+        st.metric("Vocabulary", f"{vocab.get('vocabulary_score', 0):.0f}/100")
 
 
 def render_complete_results(result: dict):
-    """Render complete analysis results"""
+    """Render complete results"""
     st.subheader("📊 Complete Analysis Results")
 
     scores = result.get("scores", {})
     nlp = result.get("nlp_analysis", {})
     tedx = result.get("tedx_analysis", {})
-    feedback = result.get("feedback", {})
 
     col1, col2, col3, col4, col5 = st.columns(5)
 
     with col1:
-        st.metric("Overall", f"{scores.get('overall_score', 0)}/100", scores.get('grade', 'N/A'))
+        st.metric("Overall", f"{scores.get('overall_score', 0):.1f}/100", scores.get('grade', 'N/A'))
 
     with col2:
-        filler_data = nlp.get('filler', {})
-        st.metric("Filler", f"{filler_data.get('filler_ratio', 0)}%", f"Count: {filler_data.get('filler_count', 0)}")
+        filler = nlp.get('filler', {})
+        ratio = filler.get('effective_filler_ratio', filler.get('filler_ratio', 0))
+        count = filler.get('effective_filler_count', filler.get('filler_count', 0))
+        st.metric("Fillers", f"{ratio}%", f"{count} words")
 
     with col3:
-        conf_data = nlp.get('confidence', {})
-        st.metric("Confidence", f"{conf_data.get('confidence_score', 0)}/100")
+        conf = nlp.get('confidence', {})
+        st.metric("Confidence", f"{conf.get('confidence_score', 0):.0f}/100")
 
     with col4:
-        st.metric("TEDX Score", f"{tedx.get('score', 0)}/100")
+        st.metric("TEDX", f"{tedx.get('score', 0):.1f}/100")
 
     with col5:
-        vocab_data = nlp.get('vocabulary', {})
-        st.metric("Vocabulary", f"{vocab_data.get('vocabulary_score', 0)}/100")
+        vocab = nlp.get('vocabulary', {})
+        st.metric("Vocabulary", f"{vocab.get('vocabulary_score', 0):.0f}/100")
 
-    with st.expander("📋 Detailed TEDX Analysis", expanded=True):
+    with st.expander("📋 Full Details"):
         col1, col2 = st.columns(2)
-
         with col1:
-            st.markdown("**TEDX Scores:**")
-            st.write(f"- Story Score: {tedx.get('story_score', 0)}")
-            st.write(f"- Persuasion: {tedx.get('persuasion_score', 0)}")
-            st.write(f"- Rhythm: {tedx.get('rhythm_score', 0)}")
-            st.write(f"- Structure: {tedx.get('structure_score', 0)}")
+            st.markdown("**NLP Analysis:**")
+            filler = nlp.get('filler', {})
+            st.write(f"- Filler words: {filler.get('filler_types', {})}")
+            
+            conf = nlp.get('confidence', {})
+            st.write(f"- Confidence: {conf.get('assessment', 'N/A')}")
+            
+            vocab = nlp.get('vocabulary', {})
+            st.write(f"- Vocabulary quality: {vocab.get('quality', 'N/A')}")
 
         with col2:
-            st.markdown("**Strengths:**")
-            for s in tedx.get("strengths", []):
-                st.write(f"- {s}")
-
-    if tedx.get("improvements"):
-        with st.expander("🎯 Improvements"):
-            for imp in tedx.get("improvements", []):
-                st.write(f"- {imp}")
-
-    if feedback:
-        with st.expander("💡 Feedback"):
-            st.write(f"**Summary:** {feedback.get('summary', '')}")
-            st.write("**Encouragement:**", feedback.get('encouragement', ''))
+            st.markdown("**TEDX Analysis:**")
+            st.write(f"- Story: {tedx.get('story_score', 0):.1f}")
+            st.write(f"- Persuasion: {tedx.get('persuasion_score', 0):.1f}")
+            st.write(f"- Rhythm: {tedx.get('rhythm_score', 0):.1f}")
+            st.write(f"- Structure: {tedx.get('structure_score', 0):.1f}")
 
 
 def render_rewrite():
-    """Render rewrite results"""
+    """Render rewrite"""
     if not st.session_state.rewritten:
         return
 
@@ -439,7 +442,7 @@ def render_rewrite():
     col1, col2 = st.columns(2)
 
     with col1:
-        st.markdown("**Your Speech:**")
+        st.markdown("**Your Original Speech:**")
         orig = st.session_state.transcript
         st.info(orig[:300] + "..." if len(orig) > 300 else orig)
 
@@ -449,15 +452,13 @@ def render_rewrite():
 
 
 def main():
-    """Main function"""
     init_session_state()
-
     render_header()
     render_sidebar()
 
     st.markdown("## 📥 Choose Input Method")
     input_method = st.radio(
-        "Select input type:",
+        "Select:",
         ["🎤 Voice/Audio", "📝 Text", "📸 Camera/Pose"],
         horizontal=True
     )
@@ -473,19 +474,6 @@ def main():
             render_rewrite()
     elif input_method == "📸 Camera/Pose":
         render_camera_input()
-
-    st.markdown("---")
-
-    try:
-        history = client.history(limit=5)
-        if history.get("sessions"):
-            st.subheader("📜 Recent Sessions")
-            for session in history["sessions"][:3]:
-                with st.expander(f"Session #{session['id']} - {session.get('grade', 'N/A')}"):
-                    st.write(f"**Score:** {session.get('overall_score', 0)}/100")
-                    st.write(f"**Text:** {session.get('original_text', 'N/A')[:100]}...")
-    except:
-        pass
 
 
 if __name__ == "__main__":
