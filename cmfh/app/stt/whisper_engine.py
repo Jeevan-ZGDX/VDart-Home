@@ -132,7 +132,9 @@ class WhisperEngine:
 
     def transcribe_raw_audio(self, audio_bytes: bytes, file_type: str = "wav") -> Dict[str, Any]:
         """Transcribe raw audio bytes"""
-        if file_type.lower() in ['mp3', 'm4a', 'ogg', 'flac']:
+        # Browser MediaRecorder commonly produces webm/opus (or mp4 on some devices).
+        # We route compressed/container formats through ffmpeg conversion when available.
+        if file_type.lower() in ['mp3', 'm4a', 'ogg', 'flac', 'webm', 'mp4']:
             return self.transcribe_mp3_data(audio_bytes)
         else:
             return self.transcribe_wav_data(audio_bytes)

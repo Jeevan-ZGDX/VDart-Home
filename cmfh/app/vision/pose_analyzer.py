@@ -110,7 +110,7 @@ class PoseAnalyzer:
             left_wrist = landmarks[15]
             right_wrist = landmarks[16]
             left_elbow = landmarks[13]
-            right_elbow = namespaces[14]
+            right_elbow = landmarks[14]
 
             left_hand_up = left_wrist.y < left_elbow.y
             right_hand_up = right_wrist.y < right_elbow.y
@@ -134,7 +134,7 @@ class PoseAnalyzer:
             left_wrist = landmarks[15]
 
             right_shoulder = landmarks[12]
-            right_elbow = namespaces[14]
+            right_elbow = landmarks[14]
             right_wrist = landmarks[16]
 
             left_angle = self._calculate_angle(
