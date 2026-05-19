@@ -1,0 +1,27 @@
+# CMFH - Call Me For Help
+# Core Dependencies (Python 3.13 compatible)
+
+fastapi>=0.109.0
+uvicorn>=0.27.0
+streamlit>=1.29.0
+requests>=2.31.0
+pydantic>=2.5.3
+python-multipart>=0.0.9
+numpy>=1.26.4
+torch>=2.5.0
+matplotlib>=3.8.0
+pillow>=10.2.0  # PIL/Pillow replaces OpenCV for image processing
+mediapipe>=0.10.0
+aiofiles>=23.0.0
+# OpenCV removed - all vision processing now uses pure MediaPipe + PIL (Pillow)
+
+# Speech-to-text and audio decode (requires ffmpeg on PATH for WebM)
+faster-whisper>=1.0.0
+pydub>=0.25.0
+
+# NLP
+spacy>=3.7.0
+# language-tool-python>=2.7.0  # optional; full grammar on final analysis only
+
+# Optional (for server-side mic capture)
+# sounddevice>=0.4.6
